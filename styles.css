@@ -1,0 +1,19 @@
+.note-listener-audio { display: none; }
+.note-listener { max-width: 620px; margin: 0 auto; }
+.note-listener-heading { display: flex; align-items: center; gap: 12px; }
+.note-listener-heading h3 { font-size: var(--font-ui-large); line-height: 1.5; overflow-wrap: anywhere; margin: 8px 0; }
+.note-listener-mark { color: var(--text-accent); flex: 0 0 24px; }
+.note-listener-status { color: var(--text-muted); margin: 12px 0; }
+.note-listener progress { display: block; width: 100%; height: 8px; margin: 12px 0; accent-color: var(--interactive-accent); }
+.note-listener-text { line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 28vh; overflow-y: auto; padding: 12px 0; border-block: 1px solid var(--background-modifier-border); }
+.note-listener-message { color: var(--text-warning); overflow-wrap: anywhere; }
+.note-listener-controls { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin: 16px 0; }
+.note-listener-controls button { width: 100%; height: 48px; padding: 0; border-radius: 6px; }
+.note-listener-controls button:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 2px; }
+.note-listener-actions { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 0; }
+.note-listener-actions button { min-height: 40px; height: auto; white-space: normal; overflow-wrap: anywhere; }
+.note-listener-diagnostics { font-size: var(--font-ui-smaller); color: var(--text-faint); line-height: 1.6; overflow-wrap: anywhere; margin-top: 12px; }
+@media (max-width: 480px) {
+  .note-listener .setting-item { flex-wrap: wrap; gap: 8px; }
+  .note-listener .setting-item-control { margin-left: auto; }
+}

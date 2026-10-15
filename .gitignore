@@ -1,0 +1,11 @@
+node_modules/
+main.js
+dist/
+*.zip
+data.json
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
