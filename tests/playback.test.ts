@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import './browser-env';
 import { build } from 'esbuild';
 import { runInNewContext } from 'node:vm';
 import type ListenerPlugin from '../src/main';
@@ -9,10 +10,20 @@ import { configScope, DEFAULT_ENGINE, synthesize, validateConfig, VOICES, type S
 const config: SpeechConfig = { engine: 'azure', region: 'eastasia', voice: 'zh-CN-XiaoxiaoNeural', key: 'test-only', authorized: true };
 const audioResponse = () => ({ status: 200, contentType: 'audio/mpeg', data: new Uint8Array([1, 2, 3]).buffer });
 
+class TestFile {
+  extension = 'md';
+  constructor(readonly path: string) {}
+}
+
+class TestFolder {
+  constructor(readonly path: string, readonly children: (TestFile | TestFolder)[]) {}
+}
+
 async function pluginWithoutHost(): Promise<ListenerPlugin> {
-  const result = await build({ entryPoints: ['src/main.ts'], bundle: true, write: false, platform: 'browser', format: 'cjs', external: ['obsidian', '@andresaya/edge-tts'] });
+  const result = await build({ entryPoints: ['src/main.ts'], bundle: true, write: false, platform: 'browser', format: 'cjs', external: ['obsidian', 'msedge-tts'] });
   const module = { exports: {} as { default: new () => ListenerPlugin } };
-  const host = { Plugin: class {}, Modal: class {}, PluginSettingTab: class {}, Platform: { isDesktopApp: true } };
+  const host = { Plugin: class {}, Modal: class {}, PluginSettingTab: class {}, Notice: class {}, Platform: { isDesktopApp: true },
+    TFile: TestFile, TFolder: TestFolder, normalizePath: (path: string) => path.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '') };
   runInNewContext(result.outputFiles[0].text, { module, exports: module.exports, require: () => host, navigator: {}, URL });
   const plugin = new module.exports.default();
   plugin.app = { workspace: { getLeavesOfType: () => [] } } as unknown as ListenerPlugin['app'];
@@ -85,6 +96,37 @@ test('platform configuration changes revoke credentials and authorization scope'
   assert.equal(plugin.settings.profiles.siliconflow.model, 'another-model');
   plugin.setEngine('edge');
   assert.equal(plugin.settings.voice, 'zh-CN-XiaoxiaoNeural');
+});
+
+test('random review traverses only selected folders and prunes excluded subtrees', async () => {
+  const plugin = await pluginWithoutHost();
+  plugin.player = { stop: () => {}, snapshot: null } as unknown as NotePlayer;
+  plugin.settings.folders = ['diary'];
+  plugin.settings.excludes = ['diary/private'];
+  const first = new TestFile('diary/first.md');
+  const second = new TestFile('diary/old/second.md');
+  const privateFolder = new TestFolder('diary/private', []);
+  Object.defineProperty(privateFolder, 'children', { get: () => { throw new Error('Excluded folder was visited'); } });
+  const root = new TestFolder('diary', [first, new TestFolder('diary/old', [second]), privateFolder]);
+  const files = new Map([[first.path, first], [second.path, second]]);
+  const roots: string[] = [];
+  plugin.app = {
+    workspace: { getLeavesOfType: () => [] },
+    vault: {
+      getAbstractFileByPath: (path: string) => { roots.push(path); assert.equal(path, 'diary'); return root; },
+      getRoot: () => { throw new Error('Whole vault must not be enumerated'); },
+      getFileByPath: (path: string) => files.get(path), read: async () => '固定测试正文。',
+    },
+  } as unknown as ListenerPlugin['app'];
+  plugin.grantSession('', configScope(plugin.config()));
+  const selector = plugin as unknown as { nextPath(): Promise<string | null> };
+  const picks = [await selector.nextPath(), await selector.nextPath()];
+  assert.deepEqual([...picks].sort(), [first.path, second.path].sort());
+  assert.equal(await selector.nextPath(), null);
+  assert.ok(roots.every(path => path === 'diary'));
+  plugin.settings.recursive = false;
+  plugin.resetRound();
+  assert.equal(await selector.nextPath(), first.path);
 });
 
 test('every selectable voice is passed to the selected provider', async () => {

@@ -1,6 +1,6 @@
 # 官方插件市场提交准备
 
-状态：尚未提交，尚未上架。查阅日期：2026-10-15。
+状态：维护者已提供 1.0.1 的自动审核反馈，1.0.2 正在修复并准备复审；是否正式上架尚未确认。查阅日期：2026-10-15。
 
 目标仓库：https://github.com/sunyongyang/obsidian_voice
 
@@ -10,8 +10,22 @@
 - 工作区已把 Edge 适配器合并进 main.js；构建只生成 main.js、manifest.json、styles.css 三个安装文件。
 - 实际打包依赖的许可说明嵌入 main.js，不依赖额外下载。
 - 新增单 bundle 分发回归，桌面限定、MIT 及描述规则检查。
-- 维护者已明确确认 MIT 和仅支持桌面；LICENSE 已加入，清单 isDesktopOnly=true，版本 1.0.1，最低 Obsidian 1.14.4。
-- 旧 1.0.0 不覆盖；1.0.1 为市场提交候选，账号关联及目录提交尚未确认完成。
+- 维护者已明确确认 MIT 和仅支持桌面；LICENSE 已加入，清单 isDesktopOnly=true，版本 1.0.2，最低 Obsidian 1.14.4。
+- 1.0.2 移除此前 GPL-only Edge 依赖，改用经过构建裁剪的 MIT 客户端，发行代码不再包含 fs 导入。详见 README 的归属与网络披露。
+- 1.0.1 的审核指出构建差异、中文文档识别、设置搜索及代码规则等问题。已完成相应代码与文档修复；新版本仍需目录重新扫描，不能据本地验证宣称审核已通过。
+
+## 1.0.1 审核项与处理
+
+| 审核项 | 1.0.2 处理 |
+| --- | --- |
+| main.js 构建不一致 | LF 规范化、固定工具版本、独立干净安装及 LF/CRLF 哈希比较 |
+| 缺少英文安装/使用 | README 添加完整英文 Installation、Usage、Privacy 和许可说明 |
+| window timers、createEl、不安全赋值 | 源码修复并用官方审核相关 ESLint 规则验证 |
+| 设置无法搜索 | 声明式 getSettingDefinitions 与类型化读写 |
+| 直接 fs 能力 | 替换 Edge SDK、裁剪文件方法；产物回归禁止 fs |
+| 全库枚举 | 只遍历用户配置目录，提前剪枝排除项 |
+| 多余 ZIP | 新候选 Release 仅上传三个标准资产 |
+| 缺少 GitHub 工件证明 | 尚未完成；当前 OAuth 缺少 workflow scope，授权尝试未完成，模板及启用步骤见 docs/RELEASING.md |
 
 ## 账号关联与提交待办
 
@@ -27,8 +41,8 @@
 ## 完成决定后的执行顺序
 
 1. 加入确认过的 LICENSE，填写准确的作者信息，更新平台及最低版本声明。
-2. 增量发布新版本，例如 1.0.1；同步 package.json、manifest.json、versions.json 和更新记录，不覆盖旧 1.0.0。
-3. 运行 npm ci、npm test、npm run build，验证三文件产物及 Edge 在真实宿主中的播放。
+2. 增量发布新版本，例如 1.0.2；同步 package.json、manifest.json、versions.json 和更新记录，不覆盖旧版本。
+3. 运行 npm ci、npm run lint、npm test、npm run build、npm run verify:build，验证三文件产物及 Edge 在真实宿主中的播放。
 4. 提交并推送默认分支；创建与清单版本完全一致、无 v 前缀的 GitHub Release，单独附加三个安装文件。
 5. 维护者在 Community directory 登录并关联 GitHub，进入 Plugins → New plugin，填写仓库 URL 和 Owner。
 6. 阅读并确认政策及维护承诺后提交。处理自动审核返回的问题；只有目录审核和发布状态都通过，才算完成上架。

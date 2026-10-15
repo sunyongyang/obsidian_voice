@@ -1,6 +1,6 @@
-import { App, MarkdownView, Modal, Notice, Platform, Plugin, PluginSettingTab, requestUrl, Setting, setIcon, TFile } from 'obsidian';
+import { App, MarkdownView, Modal, normalizePath, Notice, Platform, Plugin, PluginSettingTab, requestUrl, Setting, setIcon, TFile, TFolder, type SettingDefinitionItem } from 'obsidian';
 import { synthesizeEdge } from './edge';
-import { eligiblePath, inFolder, RandomRound, speechText } from './core';
+import { inFolder, RandomRound, speechText } from './core';
 import { NotePlayer, snapshotHash, type Bookmark, type Snapshot } from './player';
 import { configScope, DEFAULT_ENGINE, ENGINE_LABELS, HTTP_PRESETS, serviceTarget, synthesize, usesMicrosoftVoices, validateConfig, VOICES, type HttpEngine, type HttpProfile, type SpeechConfig, type SpeechEngine } from './provider';
 
@@ -69,7 +69,7 @@ export default class ListenerPlugin extends Plugin {
     if (!Object.hasOwn(VOICES, this.settings.voice)) this.settings.voice = defaults.voice;
     this.settings.speed = Number.isFinite(this.settings.speed) ? Math.min(2, Math.max(0.75, this.settings.speed)) : 1;
     this.bookmark = stored?.bookmark ?? null;
-    this.audio = document.createElement('audio');
+    this.audio = createEl('audio');
     this.audio.preload = 'auto';
     this.audio.setAttribute('playsinline', '');
     this.audio.addClass('note-listener-audio');
@@ -322,10 +322,27 @@ export default class ListenerPlugin extends Plugin {
   private async nextPath(): Promise<string | null> {
     validateConfig(this.config());
     if (!this.settings.folders.length) throw new Error('请先在插件设置中选择随机听读目录。');
-    const candidates = this.app.vault.getMarkdownFiles().filter(file =>
-      eligiblePath(file.path, this.settings.folders, this.settings.excludes, this.settings.recursive));
-    for (let attempt = 0; attempt < candidates.length; attempt++) {
-      const path = this.round.next(candidates.map(file => file.path));
+    const candidates = new Set<string>();
+    const visited = new Set<string>();
+    for (const folder of this.settings.folders) {
+      const path = normalizePath(folder);
+      const root = path ? this.app.vault.getAbstractFileByPath(path) : this.app.vault.getRoot();
+      if (!(root instanceof TFolder)) continue;
+      const pending = [root];
+      while (pending.length) {
+        const current = pending.pop()!;
+        if (visited.has(current.path) || this.settings.excludes.some(excluded => inFolder(current.path, excluded))) continue;
+        visited.add(current.path);
+        for (const entry of current.children) {
+          if (this.settings.excludes.some(excluded => inFolder(entry.path, excluded))) continue;
+          if (entry instanceof TFile && entry.extension === 'md') candidates.add(entry.path);
+          else if (entry instanceof TFolder && this.settings.recursive) pending.push(entry);
+        }
+      }
+    }
+    const paths = [...candidates];
+    for (let attempt = 0; attempt < paths.length; attempt++) {
+      const path = this.round.next(paths);
       if (!path) return null;
       try { if ((await this.allowedText(path)).chunks.length) return path; } catch { continue; }
     }
@@ -536,28 +553,35 @@ class ServiceModal extends Modal {
 class ListenerSettingTab extends PluginSettingTab {
   constructor(app: App, private readonly plugin: ListenerPlugin) { super(app, plugin); }
 
-  display(): void {
-    this.containerEl.empty();
-    const settings = this.plugin.settings;
-    new Setting(this.containerEl).setName('语音服务').setDesc(ENGINE_LABELS[settings.engine]).addButton(button => button.setButtonText('配置平台、模型与音色').onClick(() => this.plugin.showServices()));
-    const listSetting = (name: string, field: 'folders' | 'excludes'): void => {
-      new Setting(this.containerEl).setName(name).setDesc('仓库相对路径，每行一个目录。空白不代表整个仓库；填写 / 表示整个仓库。').addTextArea(text => text.setValue(settings[field].join('\n')).onChange(value => {
-        settings[field] = value.split(/\r?\n/).map(path => path.trim()).filter(Boolean);
-        this.plugin.settingsChanged();
-      }));
-    };
-    listSetting('随机听读目录', 'folders');
-    listSetting('排除目录', 'excludes');
-    new Setting(this.containerEl).setName('包含子目录').addToggle(toggle => toggle.setValue(settings.recursive).onChange(value => {
-      settings.recursive = value; this.plugin.settingsChanged();
-    }));
-    new Setting(this.containerEl).setName('锁屏显示真实标题').addToggle(toggle => toggle.setValue(settings.revealTitle).onChange(value => {
-      settings.revealTitle = value; void this.plugin.persist();
-    }));
-    new Setting(this.containerEl).setName('本次会话授权').addButton(button => button.setButtonText(settings.engine === 'edge' ? '授权在线朗读' : '输入凭据并授权').onClick(() => this.plugin.showCredentials()));
-    new Setting(this.containerEl).setName('撤回授权').addButton(button => button.setButtonText('停止并清除凭据').onClick(() => {
-      this.plugin.settingsChanged(true); new Notice('本次会话授权已撤回。');
-    }));
-    new Setting(this.containerEl).setName('播放历史').addButton(button => button.setButtonText('清除进度与音频').onClick(() => this.plugin.forget()));
+  getSettingDefinitions(): SettingDefinitionItem[] {
+    return [
+      { name: '语音服务', desc: ENGINE_LABELS[this.plugin.settings.engine], aliases: ['TTS', 'voice', 'model', 'Edge', 'Azure', 'SiliconFlow', 'Doubao'], action: () => this.plugin.showServices() },
+      { name: '随机听读目录', desc: '仓库相对路径，每行一个目录。留空不扫描；/ 明确表示整个仓库。', aliases: ['folders', 'random review'], control: { type: 'textarea', key: 'folders', rows: 3 } },
+      { name: '排除目录', aliases: ['excluded folders', 'privacy'], control: { type: 'textarea', key: 'excludes', rows: 3 } },
+      { name: '包含子目录', aliases: ['recursive', 'subfolders'], control: { type: 'toggle', key: 'recursive' } },
+      { name: '锁屏显示真实标题', aliases: ['lock screen', 'title', 'privacy'], control: { type: 'toggle', key: 'revealTitle' } },
+      { name: '本次会话授权', aliases: ['API key', 'consent', 'authorization'], action: () => this.plugin.showCredentials() },
+      { name: '撤回授权', aliases: ['revoke', 'credentials'], action: () => { this.plugin.settingsChanged(true); new Notice('本次会话授权已撤回。'); } },
+      { name: '播放历史', desc: '清除进度与内存音频。', aliases: ['history', 'clear progress'], action: () => this.plugin.forget() },
+    ];
+  }
+
+  getControlValue(key: string): unknown {
+    if (key === 'folders' || key === 'excludes') return this.plugin.settings[key].join('\n');
+    if (key === 'recursive' || key === 'revealTitle') return this.plugin.settings[key];
+    return undefined;
+  }
+
+  async setControlValue(key: string, value: unknown): Promise<void> {
+    if ((key === 'folders' || key === 'excludes') && typeof value === 'string') {
+      this.plugin.settings[key] = value.split(/\r?\n/).map(path => path.trim()).filter(Boolean).map(normalizePath).map(path => path || '/');
+      this.plugin.settingsChanged();
+    } else if (key === 'recursive' && typeof value === 'boolean') {
+      this.plugin.settings.recursive = value;
+      this.plugin.settingsChanged();
+    } else if (key === 'revealTitle' && typeof value === 'boolean') {
+      this.plugin.settings.revealTitle = value;
+      await this.plugin.persist();
+    }
   }
 }

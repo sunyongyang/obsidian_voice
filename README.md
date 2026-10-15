@@ -1,8 +1,41 @@
-# Note Listener / 笔记听读
+# Note Listener
 
-Obsidian 桌面在线听读插件，使用 [MIT 许可证](LICENSE)。**当前市场候选版本为 1.0.1，仅支持桌面端，最低要求 Obsidian 1.14.4。** 正式验证范围是 Windows 桌面端的 Edge 在线朗读及播放器；macOS/Linux、长时间锁屏和其他平台真实账户合成仍待进一步验收。Android/iOS 不在本版本支持范围内。
+Read your Markdown notes aloud in Obsidian. Note Listener provides a play/pause button in each note header, voice selection, playback speed, paragraph navigation, saved progress, and randomized review of folders you explicitly select.
 
-下载完整安装 ZIP：[GitHub 1.0.1 Release](https://github.com/sunyongyang/obsidian_voice/releases/tag/1.0.1)。本版本只需 main.js、manifest.json 和 styles.css，Edge 已合并进主文件。功能及验证边界见下文，更新记录见 [CHANGELOG.md](CHANGELOG.md)。GitHub 发布不等于已经在 Obsidian 社区目录上架。
+**Desktop only. Requires Obsidian 1.14.4 or later.** Windows Edge TTS playback has been tested. Android and iOS are not supported. Other desktop operating systems, long-running background playback, and paid-provider accounts require additional testing.
+
+## Installation
+
+1. Download `main.js`, `manifest.json`, and `styles.css` from the latest [GitHub release](https://github.com/sunyongyang/obsidian_voice/releases/latest). The release tag must match the manifest version. Do not mix files from different releases.
+2. Create `<your-vault>/.obsidian/plugins/note-listener/` and place all three files directly inside it. Use your actual configuration directory if it is not `.obsidian`.
+3. Restart Obsidian or reload the plugin. Open **Settings → Community plugins**, enable community plugins, and enable **Note Listener**.
+4. Community directory review is in progress. A GitHub release or completed automated scan does not mean that the plugin is approved or available in Obsidian's in-app directory.
+
+## Usage
+
+1. Open a Markdown note and click the play button in its header. The first attempt opens an online-speech consent dialog.
+2. Confirm the destination and grant consent. Edge TTS is selected by default and does not require an API key. It is an unofficial online service, not an offline model or a promise of unlimited free access.
+3. Use the adjacent audio-settings button to select a voice, change speed, pause, skip paragraphs, or open **语音服务配置** (speech service configuration).
+4. For randomized review, configure allowed folders in **Settings → Note Listener**. Empty configuration scans nothing. Only an explicit `/` selection permits traversing the whole vault; excluded subtrees are skipped before their children are visited.
+5. Azure Speech, SiliconFlow, Doubao V3 SSE, and OpenAI-compatible speech endpoints are optional. Configure the endpoint/model/voice, enter your key inside the consent dialog, and test the fixed sample before using personal notes. These services may require accounts and incur charges.
+
+## Privacy and Network Use
+
+- The selected provider receives the current note title, cleaned text segments, and limited next-segment prefetch only after consent. No full-vault upload is performed. `tts: false` and excluded folders prevent reading aloud.
+- Edge connects to Microsoft speech services, including `api.msedgeservices.com`; its handshake may use `speech.platform.bing.com`. Azure uses the configured regional `tts.speech.microsoft.com` endpoint. Optional presets use `api.siliconflow.cn`, `openspeech.bytedance.com`, or `api.openai.com`. A custom endpoint also receives the submitted text and credentials: only use one you trust.
+- Keys and consent stay in memory for the current plugin session. Changing providers or endpoint/model/authentication configuration revokes consent. Ordinary settings and the latest playback position are stored in the plugin data file and may be synced by your vault's sync software.
+- Audio is kept in bounded memory, not exported to files. The runtime bundle has no Node `fs` import. There is no client telemetry, advertising, automatic code installation, or self-update mechanism.
+- Stopping Edge closes its network connection. Other providers use Obsidian's non-cancellable HTTP request API; an already-sent request may still complete and be billed. There is no silent provider fallback.
+
+## License and Attribution
+
+Project source is licensed under [MIT](LICENSE). Edge networking uses a pinned MIT-licensed [MsEdgeTTS](https://github.com/Migushthe2nd/MsEdgeTTS) dependency. The build applies a checked TypeScript-AST transform to remove unused file-export and voice-list methods and select the desktop transport. Project and bundled-dependency license notices are embedded in `main.js`. No GPL/AGPL Edge client is bundled in 1.0.2.
+
+## 中文说明
+
+Obsidian 桌面在线听读插件，使用 [MIT 许可证](LICENSE)。**当前审核修复版本为 1.0.2，仅支持桌面端，最低要求 Obsidian 1.14.4。** 正式验证范围是 Windows 桌面端的 Edge 在线朗读及播放器；macOS/Linux、长时间锁屏和其他平台真实账户合成仍待进一步验收。Android/iOS 不在本版本支持范围内。
+
+安装文件：[GitHub Releases](https://github.com/sunyongyang/obsidian_voice/releases)。本版本只需 main.js、manifest.json 和 styles.css，Edge 已合并进主文件。为符合目录分发方式，候选 Release 不再附加 ZIP。功能及验证边界见下文，更新记录见 [CHANGELOG.md](CHANGELOG.md)。GitHub 发布不等于已经在 Obsidian 社区目录上架。
 
 市场提交准备：维护者已确认 MIT 和桌面限定，三文件分发已完成。账号关联、政策确认和目录审核状态见 [MARKETPLACE.md](MARKETPLACE.md)。旧 1.0.0 Release 保持原样，不与新版本混用。
 
@@ -67,20 +100,24 @@ Obsidian 桌面在线听读插件，使用 [MIT 许可证](LICENSE)。**当前�
 
 ## Edge TTS 的接入边界
 
-桌面通过 Obsidian 的 Node 环境调用 [@andresaya/edge-tts](https://www.npmjs.com/package/@andresaya/edge-tts)，停止和超时通过 AbortSignal 传递到实际请求，不在磁盘写正文或 MP3 临时文件。0.2.0 的 Node Worker 方案在真实 Obsidian 渲染进程中因 `ERR_MISSING_PLATFORM_FOR_WORKER` 无法启动，0.2.1 已移除这项依赖。更早的 edge-tts-universal 曾在真实请求中返回 HTTP 403，也已移除。
+1.0.2 改用 MIT 许可的 msedge-tts 内存音频流，关闭默认日志；构建时移除文件导出、音色列表和浏览器连接分支，不包含 Node fs 模块。停止、超时或超过音频大小限制时关闭客户端连接，不在磁盘写正文或 MP3。此前 Edge 客户端的 GPL 许可与 MIT 发行说明存在冲突，已移除，并通过产物依赖检查防止回归。旧版本的 Node Worker 方案及其他失败客户端也不再使用。
 
 2026-10-15 已在 Windows Obsidian 1.14.4 的真实插件实例中验证加载、Edge 在线合成、音频解码、开始播放和播放结束事件，固定非私密测试句播放约 3.5 秒。已修复空音源重置事件影响新播放、自然结束被误识别为暂停等浏览器事件问题。此记录不代表人工试听音质、多篇长文稳定性、系统锁屏或 Android 已验收。测试没有上传真实笔记，结束后撤回临时授权。
+
+1.0.2 的 MIT 替代实现也已在同一真实宿主中单独验证：固定测试句返回 21,744 字节 MP3，播放开始和结束事件完整，时长 3.624 秒。声明式设置已注册 8 个条目。未使用真实笔记或付费平台密钥进行测试。
 
 普通 WebView 不能直接复用这个 Node 适配器。用户未授权时不发送正文；服务失效时提示错误，不擅自增加服务器、切换到其他服务或关闭 TLS 证书校验。
 
 ## 构建
 
-开发环境：Node.js 22 或更新版本及 npm。本项目在 Node.js 24 上构建。
+固定构建环境：Node.js 24.15.0、npm 11.12.1。发布复现与工件证明流程见 [docs/RELEASING.md](docs/RELEASING.md)。
 
 ```powershell
-npm ci
+npm ci --ignore-scripts
+npm run lint
 npm test
 npm run build
+npm run verify:build
 ```
 
 当前工作区构建生成 dist/note-listener 目录中的三个安装文件，Edge 已合并到主文件：
@@ -154,7 +191,7 @@ tts: false
 ---
 ```
 
-## 安卓真机验收
+## 后续移动端验收规划（当前不支持）
 
 当前没有 Android 真机或真实 Azure 在线合成测试证据。上述 Windows 真实宿主验证仅覆盖固定短句；其余自动测试使用模拟网络及音频对象，不能替代长时间后台与移动端验收。
 

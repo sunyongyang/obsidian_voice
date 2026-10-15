@@ -1,0 +1,50 @@
+name: Verified release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.15.0'
+          cache: npm
+      - name: Pin npm
+        run: npm install --global npm@11.12.1
+      - run: npm ci --ignore-scripts
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+      - run: npm run verify:build
+      - name: Determine version
+        id: version
+        run: echo "value=$(node -p 'require("./manifest.json").version')" >> "$GITHUB_OUTPUT"
+      - name: Attest exact release assets
+        uses: actions/attest-build-provenance@v4.2.2
+        with:
+          subject-path: |
+            dist/note-listener/main.js
+            dist/note-listener/manifest.json
+            dist/note-listener/styles.css
+      - name: Publish new release without replacing existing assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          gh release create "$VERSION" \
+            dist/note-listener/main.js \
+            dist/note-listener/manifest.json \
+            dist/note-listener/styles.css \
+            --target "$GITHUB_SHA" \
+            --title "Note Listener $VERSION" \
+            --notes-file CHANGELOG.md

@@ -72,6 +72,7 @@ export function splitSpeech(text: string, limit = 280): string[] {
 export function inFolder(path: string, folder: string, recursive = true): boolean {
   const normalized = folder.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
   if (!normalized) return true;
+  if (path === normalized) return true;
   if (!path.startsWith(`${normalized}/`)) return false;
   return recursive || !path.slice(normalized.length + 1).includes('/');
 }

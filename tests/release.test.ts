@@ -21,12 +21,15 @@ test('release package, manifest and compatibility map have consistent versions',
 });
 
 test('community installer main.js includes Edge without any extra plugin code file', async () => {
+  const config = await import(new URL('../esbuild.config.mjs', import.meta.url).href) as { edgeNetworkPlugin: import('esbuild').Plugin };
   const result = await build({ entryPoints: ['src/main.ts'], bundle: true, write: false, platform: 'node', format: 'cjs',
-    target: 'node18', external: ['obsidian', 'bufferutil', 'utf-8-validate'], outfile: 'main.js', metafile: true });
+    target: 'node18', external: ['obsidian', 'bufferutil', 'utf-8-validate'], plugins: [config.edgeNetworkPlugin], outfile: 'main.js', metafile: true });
   const allowed = new Set([...builtinModules, ...builtinModules.map(name => `node:${name}`), 'obsidian', 'bufferutil', 'utf-8-validate']);
   const imports = Object.values(result.metafile!.outputs).flatMap(output => output.imports);
   assert.ok(imports.every(item => allowed.has(item.path)), JSON.stringify(imports));
-  assert.ok(Object.keys(result.metafile!.inputs).some(path => path.includes('@andresaya/edge-tts')));
+  assert.ok(Object.keys(result.metafile!.inputs).some(path => path.includes('msedge-tts')));
+  assert.ok(!imports.some(item => /^(node:)?fs(?:\/|$)/.test(item.path)), 'Runtime must not import fs');
+  assert.ok(!Object.keys(result.metafile!.inputs).some(path => path.includes('@andresaya')));
   assert.equal(result.outputFiles.length, 1);
   assert.ok(!result.outputFiles[0].text.includes('/edge.cjs'));
 });

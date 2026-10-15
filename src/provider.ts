@@ -129,9 +129,10 @@ export function decodeDoubao(data: ArrayBuffer): Blob {
   for (const event of content.split(/\r?\n\r?\n/)) {
     const payload = event.split(/\r?\n/).filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n');
     if (!payload) continue;
-    let record: { code?: unknown; data?: unknown };
-    try { record = JSON.parse(payload); } catch { throw new Error('豆包返回了无法解析的 SSE 数据。'); }
-    if (!record || typeof record !== 'object') throw new Error('豆包响应格式不正确。');
+    let parsed: unknown;
+    try { parsed = JSON.parse(payload); } catch { throw new Error('豆包返回了无法解析的 SSE 数据。'); }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('豆包响应格式不正确。');
+    const record = parsed as Record<string, unknown>;
     if (completed) throw new Error('豆包结束事件后仍有数据。');
     if (record.code === 20000000) { completed = true; continue; }
     if (record.code !== 0) throw new Error(`豆包合成失败（代码 ${typeof record.code === 'number' ? record.code : '未知'}），请检查资源、音色及额度。`);
@@ -169,13 +170,13 @@ export async function synthesize(
     const finish = (error?: Error, audio?: Blob): void => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      window.clearTimeout(timer);
       signal.removeEventListener('abort', abort);
       if (error) reject(error);
       else resolve(audio!);
     };
     const abort = (): void => finish(new DOMException('Aborted', 'AbortError'));
-    const timer = setTimeout(() => finish(new Error('在线合成超时，请检查网络后重试。')), timeoutMs);
+    const timer = window.setTimeout(() => finish(new Error('在线合成超时，请检查网络后重试。')), timeoutMs);
     signal.addEventListener('abort', abort, { once: true });
     if (signal.aborted) { abort(); return; }
     void transport(request).then(response => {

@@ -1,7 +1,7 @@
 {
   "id": "note-listener",
   "name": "Note Listener",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "minAppVersion": "1.14.4",
   "description": "Listen to your notes with on-demand online speech and randomized review.",
   "author": "sunyongyang",

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import './browser-env';
 import { buildSpeechRequest, configScope, decodeDoubao, endpointUrl, HTTP_PRESETS, synthesize, validateConfig, type SpeechConfig } from '../src/provider';
 
 function config(engine: 'siliconflow' | 'doubao' | 'openai'): SpeechConfig {

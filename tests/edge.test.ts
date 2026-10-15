@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import './browser-env';
 import { synthesizeEdge } from '../src/edge';
 
 test('desktop adapter returns audio without requiring Node workers', async () => {
