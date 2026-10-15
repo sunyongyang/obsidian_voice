@@ -33,7 +33,7 @@ Project source is licensed under [MIT](LICENSE). Edge networking uses a pinned M
 
 ## 中文说明
 
-Obsidian 桌面在线听读插件，使用 [MIT 许可证](LICENSE)。**当前审核修复版本为 1.0.2，仅支持桌面端，最低要求 Obsidian 1.14.4。** 正式验证范围是 Windows 桌面端的 Edge 在线朗读及播放器；macOS/Linux、长时间锁屏和其他平台真实账户合成仍待进一步验收。Android/iOS 不在本版本支持范围内。
+Obsidian 桌面在线听读插件，使用 [MIT 许可证](LICENSE)。**当前审核修复版本为 1.0.3，仅支持桌面端，最低要求 Obsidian 1.14.4。** 正式验证范围是 Windows 桌面端的 Edge 在线朗读及播放器；macOS/Linux、长时间锁屏和其他平台真实账户合成仍待进一步验收。Android/iOS 不在本版本支持范围内。
 
 安装文件：[GitHub Releases](https://github.com/sunyongyang/obsidian_voice/releases)。本版本只需 main.js、manifest.json 和 styles.css，Edge 已合并进主文件。为符合目录分发方式，候选 Release 不再附加 ZIP。功能及验证边界见下文，更新记录见 [CHANGELOG.md](CHANGELOG.md)。GitHub 发布不等于已经在 Obsidian 社区目录上架。
 
