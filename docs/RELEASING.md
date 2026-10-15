@@ -25,7 +25,24 @@ The workflow is now located at [.github/workflows/release.yml](../.github/workfl
 
 Attestations cannot be created honestly by renaming a checksum file or uploading a locally invented provenance document. They require the authenticated GitHub Actions environment. Old manually uploaded releases remain unchanged; use the new CI-built release for directory review. A failed run is not a completed release.
 
-Verify each downloaded asset using `gh attestation verify main.js --repo sunyongyang/obsidian_voice`, and repeat for manifest.json and styles.css. The signer workflow and source commit should match the corresponding release run.
+## Verify a Release's Provenance
+
+Every CI-built release asset carries a GitHub SLSA provenance attestation: a statement, signed by the GitHub-hosted runner and recorded in the sigstore transparency log, that the exact file bytes were produced by `.github/workflows/release.yml` from a specific commit of this repository. Reviewers and users can check it independently without trusting the maintainer:
+
+1. Install the GitHub CLI and authenticate (`gh auth login`); read access to the public repository is enough.
+2. Download the three release assets:
+   ```sh
+   gh release download 1.0.3 --repo sunyongyang/obsidian_voice --clobber
+   ```
+3. Verify each asset against the expected signer identity:
+   ```sh
+   gh attestation verify main.js \
+     --repo sunyongyang/obsidian_voice \
+     --signer-workflow sunyongyang/obsidian_voice/.github/workflows/release.yml
+   ```
+   Repeat for `manifest.json` and `styles.css`. Exit code 0 means all three checks passed: the file's SHA-256 digest matches the digest named in the attestation (it is the exact file the workflow built), the signature is cryptographically valid, and the signing identity is this repository and this workflow at the released commit.
+
+To pin the source commit as well, compare the release page's target commit with the certificate identity from `gh attestation verify --format json`: the signer workflow path, source repository and source commit must match the corresponding release run. A passing result cannot be fabricated locally — it requires the authenticated GitHub Actions environment.
 
 ## Release Asset Policy
 
