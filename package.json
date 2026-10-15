@@ -1,6 +1,6 @@
 {
   "name": "note-listener",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,6 +10,7 @@
     "check": "tsc --noEmit"
   },
   "dependencies": {
+    "@andresaya/edge-tts": "1.9.1",
     "markdown-it": "^14.1.0",
     "yaml": "^2.8.1"
   },

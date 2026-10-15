@@ -1,9 +1,11 @@
-import { App, Modal, Notice, Plugin, PluginSettingTab, requestUrl, Setting, setIcon, TFile } from 'obsidian';
+import { App, FileSystemAdapter, MarkdownView, Modal, Notice, Platform, Plugin, PluginSettingTab, requestUrl, Setting, setIcon, TFile } from 'obsidian';
 import { eligiblePath, inFolder, RandomRound, speechText } from './core';
 import { NotePlayer, snapshotHash, type Bookmark, type Snapshot } from './player';
-import { synthesize, validateConfig, VOICES, type SpeechConfig } from './provider';
+import { configScope, DEFAULT_ENGINE, ENGINE_LABELS, HTTP_PRESETS, serviceTarget, synthesize, usesMicrosoftVoices, validateConfig, VOICES, type EdgeSynthesizer, type HttpEngine, type HttpProfile, type SpeechConfig, type SpeechEngine } from './provider';
 
 interface ListenerSettings {
+  engine: SpeechEngine;
+  profiles: Record<HttpEngine, HttpProfile>;
   region: string;
   voice: string;
   folders: string[];
@@ -19,6 +21,8 @@ interface StoredData {
 }
 
 const defaults: ListenerSettings = {
+  engine: DEFAULT_ENGINE,
+  profiles: { siliconflow: { ...HTTP_PRESETS.siliconflow }, doubao: { ...HTTP_PRESETS.doubao }, openai: { ...HTTP_PRESETS.openai } },
   region: 'eastasia', voice: 'zh-CN-XiaoxiaoNeural', folders: [], excludes: [],
   recursive: true, revealTitle: false, speed: 1,
 };
@@ -34,6 +38,9 @@ export default class ListenerPlugin extends Plugin {
   player!: NotePlayer;
   sessionKey = '';
   authorized = false;
+  private authorizedScope = '';
+  private serviceModal: ServiceModal | null = null;
+  private credentialModals = new Set<CredentialModal>();
   private round = new RandomRound();
   private panel: PlayerModal | null = null;
   private audio!: HTMLAudioElement;
@@ -41,10 +48,21 @@ export default class ListenerPlugin extends Plugin {
   private saveQueue: Promise<void> = Promise.resolve();
   private saveErrorShown = false;
   private disposed = false;
+  private noteActions = new Map<MarkdownView, { play: HTMLElement; settings: HTMLElement }>();
 
   async onload(): Promise<void> {
     const stored = await this.loadData() as Partial<StoredData> | null;
     this.settings = { ...defaults, ...stored?.settings };
+    if (!Object.hasOwn(ENGINE_LABELS, this.settings.engine)) this.settings.engine = DEFAULT_ENGINE;
+    const storedProfiles = stored?.settings?.profiles;
+    this.settings.profiles = Object.fromEntries(Object.entries(HTTP_PRESETS).map(([engine, preset]) => {
+      const storedProfile = storedProfiles?.[engine as HttpEngine];
+      const profile = Object.fromEntries(Object.entries(preset).map(([field, value]) => {
+        const candidate = storedProfile?.[field as keyof HttpProfile];
+        return [field, typeof candidate === 'string' ? candidate : value];
+      }));
+      return [engine, profile];
+    })) as unknown as Record<HttpEngine, HttpProfile>;
     this.settings.folders = Array.isArray(this.settings.folders) ? this.settings.folders.filter(value => typeof value === 'string') : [];
     this.settings.excludes = Array.isArray(this.settings.excludes) ? this.settings.excludes.filter(value => typeof value === 'string') : [];
     if (!Object.hasOwn(VOICES, this.settings.voice)) this.settings.voice = defaults.voice;
@@ -63,7 +81,7 @@ export default class ListenerPlugin extends Plugin {
         const response = await requestUrl({ ...request, method: 'POST', throw: false });
         const contentType = Object.entries(response.headers).find(([name]) => name.toLowerCase() === 'content-type')?.[1] ?? '';
         return { status: response.status, contentType, data: response.arrayBuffer };
-      }),
+      }, 30000, (text, voice, signal) => this.edgeSpeech(text, voice, signal)),
       next: () => this.nextPath(),
       changed: () => this.changed(),
       bookmark: value => { this.bookmark = value; void this.persist(); },
@@ -97,16 +115,26 @@ export default class ListenerPlugin extends Plugin {
       void this.allowedText(file.path).catch(() => this.forget());
     }));
     this.registerDomEvent(document, 'visibilitychange', () => { this.player.tick(); });
+    this.registerEvent(this.app.workspace.on('layout-change', () => this.refreshNoteActions()));
+    this.registerEvent(this.app.workspace.on('file-open', () => this.refreshNoteActions()));
+    this.registerEvent(this.app.workspace.on('active-leaf-change', () => this.refreshNoteActions()));
+    this.app.workspace.onLayoutReady(() => this.refreshNoteActions());
     this.installMediaSession();
   }
 
   onunload(): void {
     this.disposed = true;
     this.panel?.close();
+    this.serviceModal?.close();
+    for (const modal of this.credentialModals) modal.close();
+    this.credentialModals.clear();
     this.player?.destroy();
+    for (const action of this.noteActions.values()) { action.play.remove(); action.settings.remove(); }
+    this.noteActions.clear();
     this.audio?.remove();
     this.sessionKey = '';
     this.authorized = false;
+    this.authorizedScope = '';
     if ('mediaSession' in navigator) {
       for (const action of this.mediaActions) {
         try { navigator.mediaSession.setActionHandler(action, null); } catch { continue; }
@@ -117,7 +145,54 @@ export default class ListenerPlugin extends Plugin {
   }
 
   config(): SpeechConfig {
-    return { region: this.settings.region, voice: this.settings.voice, key: this.sessionKey, authorized: this.authorized };
+    const profile = usesMicrosoftVoices(this.settings.engine) ? undefined : this.settings.profiles[this.settings.engine as HttpEngine];
+    const config: SpeechConfig = { engine: this.settings.engine, desktop: Platform.isDesktopApp, region: this.settings.region,
+      voice: profile?.voice ?? this.settings.voice, key: this.sessionKey, authorized: this.authorized, profile: profile ? { ...profile } : undefined };
+    config.authorized = this.authorized && this.authorizedScope === configScope(config);
+    return config;
+  }
+
+  grantSession(key: string, expectedScope: string): void {
+    if (this.disposed || expectedScope !== configScope(this.config())) throw new Error('服务配置已变化，请重新打开授权窗口。');
+    const config = { ...this.config(), authorized: true, key };
+    validateConfig(config);
+    this.player.stop(true);
+    this.sessionKey = key.trim();
+    this.authorized = true;
+    this.authorizedScope = configScope(config);
+    this.changed();
+  }
+
+  setEngine(engine: SpeechEngine): void {
+    if (!Object.hasOwn(ENGINE_LABELS, engine) || engine === this.settings.engine) return;
+    this.settings.engine = engine;
+    this.settingsChanged(true);
+    this.changed();
+  }
+
+  setProfileField(field: keyof HttpProfile, value: string): void {
+    if (usesMicrosoftVoices(this.settings.engine)) return;
+    const profile = this.settings.profiles[this.settings.engine as HttpEngine];
+    if (field === 'voice') { this.setVoice(value); return; }
+    if (profile[field] === value) return;
+    if (field === 'authMode') {
+      if (value !== 'api-key' && value !== 'app-token') return;
+      profile.authMode = value;
+    } else profile[field] = value;
+    this.settingsChanged(true);
+    this.changed();
+  }
+
+  private async edgeSpeech(text: string, voice: string, signal: AbortSignal): Promise<Blob> {
+    if (!Platform.isDesktopApp || !(this.app.vault.adapter instanceof FileSystemAdapter)) {
+      throw new Error('Edge TTS 直连目前仅支持桌面文件仓库。');
+    }
+    const directory = this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`;
+    const modulePath = `${this.app.vault.adapter.getBasePath()}/${directory}/edge.cjs`;
+    let adapter: { synthesizeEdge: EdgeSynthesizer };
+    try { adapter = require(modulePath) as { synthesizeEdge: EdgeSynthesizer }; }
+    catch { throw new Error('缺少或无法加载 Edge 桌面适配器，请重新复制全部四个安装文件。'); }
+    return adapter.synthesizeEdge(text, voice, signal);
   }
 
   persist(): Promise<void> {
@@ -133,8 +208,22 @@ export default class ListenerPlugin extends Plugin {
     this.player.stop(true);
     this.bookmark = null;
     this.round.reset();
-    if (revoke) { this.authorized = false; this.sessionKey = ''; }
+    if (revoke) { this.authorized = false; this.authorizedScope = ''; this.sessionKey = ''; }
     void this.persist();
+  }
+
+  setVoice(voice: string): void {
+    const native = usesMicrosoftVoices(this.settings.engine);
+    if (native && !Object.hasOwn(VOICES, voice)) return;
+    const profile = native ? undefined : this.settings.profiles[this.settings.engine as HttpEngine];
+    const nextVoice = voice.trim();
+    if (nextVoice === (profile?.voice ?? this.settings.voice)) return;
+    this.player.stop();
+    if (profile) profile.voice = nextVoice;
+    else this.settings.voice = nextVoice;
+    if (this.bookmark) this.bookmark = { ...this.bookmark, seconds: 0 };
+    void this.persist();
+    this.changed();
   }
 
   forget(): void {
@@ -156,7 +245,62 @@ export default class ListenerPlugin extends Plugin {
 
   resetRound(): void { this.round.reset(); new Notice('已开始新一轮随机听读。'); }
 
-  showCredentials(): void { new CredentialModal(this.app, this).open(); }
+  showCredentials(afterAuthorized?: () => void): void {
+    const modal = new CredentialModal(this.app, this, afterAuthorized, () => this.credentialModals.delete(modal));
+    this.credentialModals.add(modal);
+    modal.open();
+  }
+
+  showServices(): void {
+    if (this.serviceModal) { this.serviceModal.render(); return; }
+    this.serviceModal = new ServiceModal(this.app, this, () => { this.serviceModal = null; });
+    this.serviceModal.open();
+  }
+
+  toggleNote(path: string): void {
+    const sameNote = this.player.snapshot?.path === path;
+    if (sameNote && ['playing', 'buffering', 'preparing'].includes(this.player.status)) {
+      this.player.pause();
+      return;
+    }
+    if (!this.config().authorized) {
+      this.showCredentials(() => this.toggleNote(path));
+      return;
+    }
+    if (sameNote && this.player.status !== 'finished') this.run(() => this.player.resume());
+    else this.run(() => this.player.start(path, !this.player.snapshot && this.bookmark?.path === path ? this.bookmark : undefined));
+  }
+
+  private refreshNoteActions(): void {
+    if (this.disposed || !this.player) return;
+    const views = new Set(this.app.workspace.getLeavesOfType('markdown')
+      .map(leaf => leaf.view).filter((view): view is MarkdownView => view instanceof MarkdownView && !!view.file));
+    for (const [view, actions] of this.noteActions) {
+      if (!views.has(view) || !view.containerEl.contains(actions.play) || !view.containerEl.contains(actions.settings)) {
+        actions.play.remove(); actions.settings.remove(); this.noteActions.delete(view);
+      }
+    }
+    for (const view of views) {
+      let actions = this.noteActions.get(view);
+      if (!actions) {
+        const play = view.addAction('play', '朗读当前笔记', () => {
+          if (view.file) this.toggleNote(view.file.path);
+        });
+        const settings = view.addAction('audio-lines', '音色与播放设置', () => this.showPanel());
+        play.addClass('note-listener-note-action');
+        play.dataset.noteListenerAction = 'play';
+        settings.dataset.noteListenerAction = 'settings';
+        actions = { play, settings };
+        this.noteActions.set(view, actions);
+      }
+      const playing = this.player.snapshot?.path === view.file?.path && ['playing', 'buffering', 'preparing'].includes(this.player.status);
+      const label = playing ? '暂停朗读当前笔记' : '朗读当前笔记';
+      setIcon(actions.play, playing ? 'pause' : 'play');
+      actions.play.setAttribute('aria-label', label);
+      actions.play.setAttribute('aria-pressed', String(playing));
+      actions.settings.setAttribute('aria-label', '音色与播放设置');
+    }
+  }
 
   async readCurrent(): Promise<void> {
     const file = this.app.workspace.getActiveFile();
@@ -196,6 +340,7 @@ export default class ListenerPlugin extends Plugin {
 
   private changed(): void {
     if (this.disposed) return;
+    this.refreshNoteActions();
     this.panel?.render();
     if (!this.player || !('mediaSession' in navigator)) return;
     try {
@@ -227,7 +372,7 @@ export default class ListenerPlugin extends Plugin {
 class PlayerModal extends Modal {
   constructor(app: App, private readonly plugin: ListenerPlugin, private readonly closed: () => void) { super(app); }
 
-  onOpen(): void { this.setTitle('笔记听读 · 技术预览'); this.render(); }
+  onOpen(): void { this.modalEl.addClass('note-listener-modal'); this.setTitle('笔记听读'); this.render(); }
 
   render(): void {
     const focused = this.contentEl.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.action : undefined;
@@ -235,12 +380,16 @@ class PlayerModal extends Modal {
     this.contentEl.addClass('note-listener');
     const player = this.plugin.player;
     if (!player) return;
+    this.contentEl.dataset.state = player.status;
     const heading = this.contentEl.createDiv({ cls: 'note-listener-heading' });
     setIcon(heading.createSpan({ cls: 'note-listener-mark' }), 'headphones');
     heading.createEl('h3', { text: player.snapshot?.title ?? '尚未选择笔记' });
-    this.contentEl.createDiv({ cls: 'note-listener-status', text: labels[player.status] });
+    const meta = this.contentEl.createDiv({ cls: 'note-listener-meta' });
+    const status = meta.createDiv({ cls: 'note-listener-status', attr: { role: 'status' } });
+    status.createSpan({ cls: 'note-listener-status-dot', attr: { 'aria-hidden': 'true' } });
+    status.createSpan({ text: labels[player.status] });
     if (player.snapshot) {
-      this.contentEl.createDiv({ text: `第 ${player.index + 1} / ${player.snapshot.chunks.length} 段` });
+      meta.createSpan({ cls: 'note-listener-position', text: `${player.index + 1} / ${player.snapshot.chunks.length} 段` });
       this.contentEl.createEl('progress', { attr: { max: String(player.snapshot.chunks.length), value: String(player.index + 1), 'aria-label': '段落进度' } });
       this.contentEl.createEl('p', { cls: 'note-listener-text', text: player.snapshot.chunks[player.index] ?? '' });
     }
@@ -252,6 +401,7 @@ class PlayerModal extends Modal {
       element.disabled = disabled;
       element.addEventListener('click', action);
     };
+    button('square', '停止', () => player.stop());
     button('skip-back', '上一段', () => this.plugin.run(() => player.seekChunk(-1)), !player.snapshot || player.index === 0);
     const active = player.status === 'playing' || player.status === 'buffering' || player.status === 'preparing';
     button(active ? 'pause' : 'play', active ? '暂停' : '继续或重试', () => {
@@ -261,29 +411,48 @@ class PlayerModal extends Modal {
       else this.plugin.run(() => this.plugin.readCurrent());
     });
     button('skip-forward', '下一段', () => this.plugin.run(() => player.seekChunk(1)), !player.snapshot || player.index + 1 >= player.snapshot.chunks.length);
-    button('square', '停止', () => player.stop());
     button('shuffle', '随机换一篇', () => this.plugin.run(() => player.random()));
-    new Setting(this.contentEl).setName('连续随机播放').addToggle(toggle => toggle.setValue(player.continuous).onChange(value => { player.continuous = value; }));
-    new Setting(this.contentEl).setName('倍速').addDropdown(dropdown => {
+    const preferences = this.contentEl.createDiv({ cls: 'note-listener-preferences' });
+    if (usesMicrosoftVoices(this.plugin.settings.engine)) {
+      new Setting(preferences).setName('音色').addDropdown(dropdown => {
+        dropdown.selectEl.setAttribute('aria-label', '朗读音色');
+        dropdown.selectEl.dataset.action = 'voice';
+        dropdown.addOptions(VOICES).setValue(this.plugin.settings.voice).onChange(value => this.plugin.setVoice(value));
+      });
+    } else {
+      new Setting(preferences).setName('音色').setDesc(this.plugin.config().voice || '未配置').addButton(button => button.setButtonText('更改').onClick(() => this.plugin.showServices()));
+    }
+    new Setting(preferences).setName('倍速').addDropdown(dropdown => {
+      dropdown.selectEl.setAttribute('aria-label', '播放倍速');
+      dropdown.selectEl.dataset.action = 'speed';
       for (const speed of [0.75, 1, 1.25, 1.5, 1.75, 2]) dropdown.addOption(String(speed), `${speed}x`);
       dropdown.setValue(String(player.speed)).onChange(value => {
         player.setSpeed(Number(value)); this.plugin.settings.speed = player.speed; void this.plugin.persist();
       });
     });
+    new Setting(preferences).setName('连续随机播放').addToggle(toggle => {
+      toggle.toggleEl.dataset.action = 'continuous';
+      toggle.setValue(player.continuous).onChange(value => { player.continuous = value; });
+    });
     const actions = this.contentEl.createDiv({ cls: 'note-listener-actions' });
-    const command = (label: string, action: () => void): void => {
-      actions.createEl('button', { text: label }).addEventListener('click', action);
+    const command = (icon: string, label: string, action: () => void): void => {
+      const element = actions.createEl('button', { attr: { 'data-action': icon } });
+      setIcon(element.createSpan({ cls: 'note-listener-command-icon', attr: { 'aria-hidden': 'true' } }), icon);
+      element.createSpan({ text: label });
+      element.addEventListener('click', action);
     };
-    command('朗读当前笔记', () => this.plugin.run(() => this.plugin.readCurrent()));
-    command('连接与授权', () => this.plugin.showCredentials());
-    command('试听', () => this.plugin.run(() => player.preview()));
-    command('新一轮随机', () => this.plugin.resetRound());
-    if (player.snapshot) command('打开原文', () => {
+    command('book-open', '朗读当前笔记', () => this.plugin.run(() => this.plugin.readCurrent()));
+    command('volume-2', '试听音色', () => this.plugin.run(() => player.preview()));
+    command('sliders-horizontal', '语音服务配置', () => this.plugin.showServices());
+    command('shield-check', '连接与授权', () => this.plugin.showCredentials());
+    command('rotate-ccw', '新一轮随机', () => this.plugin.resetRound());
+    if (player.snapshot) command('file-text', '打开原文', () => {
       const file = this.app.vault.getFileByPath(player.snapshot!.path);
       if (file) this.plugin.run(() => this.app.workspace.getLeaf(false).openFile(file));
     });
-    const diagnostics = this.contentEl.createDiv({ cls: 'note-listener-diagnostics' });
-    diagnostics.setText(`Azure · ${this.plugin.settings.region} · ${this.plugin.authorized && this.plugin.sessionKey ? '本次会话已连接配置' : '未授权或未输入密钥'} · 媒体会话 ${'mediaSession' in navigator ? '接口存在，锁屏未验收' : '接口不可用'}`);
+    const diagnostics = this.contentEl.createEl('details', { cls: 'note-listener-diagnostics' });
+    diagnostics.createEl('summary', { text: '连接状态' });
+    diagnostics.createDiv({ text: `${ENGINE_LABELS[this.plugin.settings.engine]} · ${this.plugin.config().authorized ? '本次会话已授权' : '未授权'} · 媒体会话 ${'mediaSession' in navigator ? '接口存在，锁屏未验收' : '接口不可用'}` });
     if (focused) this.contentEl.querySelector<HTMLElement>(`[data-action="${focused}"]`)?.focus();
   }
 
@@ -291,34 +460,83 @@ class PlayerModal extends Modal {
 }
 
 class CredentialModal extends Modal {
-  constructor(app: App, private readonly plugin: ListenerPlugin) { super(app); }
+  constructor(app: App, private readonly plugin: ListenerPlugin, private readonly afterAuthorized?: () => void, private readonly closed?: () => void) { super(app); }
 
   onOpen(): void {
     this.setTitle('在线朗读授权');
     const { contentEl } = this;
-    contentEl.createEl('p', { text: '朗读会把当前笔记标题、正文片段及下一段预取发送到 Microsoft Azure Speech，可能产生你账户上的费用。不发送全库。密钥仅留在本次插件会话内存，重启后需重新输入。' });
+    const engine = this.plugin.settings.engine;
+    const scope = configScope(this.plugin.config());
+    let target: string;
+    try { target = serviceTarget(this.plugin.config()); }
+    catch (error) { contentEl.createEl('p', { text: error instanceof Error ? error.message : '请先配置服务。' }); return; }
+    contentEl.createEl('p', { text: engine === 'edge'
+      ? '朗读会把当前笔记标题、正文片段及下一段预取发送到 Microsoft Edge 在线朗读服务。不需要 Azure 账号或密钥，但不是离线模型，也不保证服务永久免费或长期可用。此直连适配器仅支持桌面端。'
+      : `朗读会把当前笔记标题、正文片段及下一段预取发送到 ${target}，可能产生你账户上的费用。不发送全库。密钥仅留在本次插件会话内存，重启后需重新输入。` });
     let key = '';
     let agreed = false;
-    new Setting(contentEl).setName('Azure Speech 密钥').addText(text => {
-      text.inputEl.type = 'password';
-      text.inputEl.autocomplete = 'off';
-      text.onChange(value => { key = value; });
-    });
-    new Setting(contentEl).setName('同意发送到 Azure 并承担可能的调用费用').addToggle(toggle => toggle.onChange(value => { agreed = value; }));
+    if (engine !== 'edge') {
+      const legacy = engine === 'doubao' && this.plugin.config().profile?.authMode === 'app-token';
+      new Setting(contentEl).setName(engine === 'azure' ? 'Azure Speech 密钥' : legacy ? 'Access Token' : 'API Key').addText(text => {
+        text.inputEl.type = 'password';
+        text.inputEl.autocomplete = 'off';
+        text.onChange(value => { key = value; });
+      });
+    }
+    new Setting(contentEl).setName(engine === 'edge' ? '同意发送到 Edge 在线朗读服务' : '同意向当前服务发送文字并承担可能的费用').addToggle(toggle => toggle.onChange(value => { agreed = value; }));
     new Setting(contentEl).addButton(button => button.setButtonText('启用本次会话').setCta().onClick(() => {
       try {
-        validateConfig({ ...this.plugin.config(), key, authorized: agreed });
-        this.plugin.player.stop(true);
-        this.plugin.sessionKey = key.trim();
-        this.plugin.authorized = true;
+        if (!agreed) throw new Error('请先同意在线朗读授权。');
+        this.plugin.grantSession(key, scope);
         key = '';
         this.close();
-        this.plugin.showPanel();
+        if (this.afterAuthorized) this.afterAuthorized();
+        else this.plugin.showPanel();
       } catch (error) { new Notice(error instanceof Error ? error.message : '配置无效。'); }
     }));
   }
 
-  onClose(): void { this.contentEl.empty(); }
+  onClose(): void { this.contentEl.empty(); this.closed?.(); }
+}
+
+class ServiceModal extends Modal {
+  constructor(app: App, private readonly plugin: ListenerPlugin, private readonly closed: () => void) { super(app); }
+
+  onOpen(): void { this.setTitle('语音服务配置'); this.modalEl.addClass('note-listener-service-modal'); this.render(); }
+
+  render(): void {
+    const container = this.contentEl;
+    container.empty();
+    const settings = this.plugin.settings;
+    new Setting(container).setName('服务平台').addDropdown(dropdown => dropdown.addOptions(ENGINE_LABELS).setValue(settings.engine).onChange(value => {
+      this.plugin.setEngine(value as SpeechEngine); this.render();
+    }));
+    const textField = (name: string, value: string, update: (value: string) => void, description = ''): void => {
+      new Setting(container).setName(name).setDesc(description).addText(text => {
+        text.setValue(value);
+        text.inputEl.setAttribute('aria-label', name);
+        text.inputEl.addEventListener('change', () => update(text.getValue().trim()));
+      });
+    };
+    if (usesMicrosoftVoices(settings.engine)) {
+      if (settings.engine === 'azure') textField('Azure 区域', settings.region, value => { settings.region = value; this.plugin.settingsChanged(true); }, '例如 eastasia，须与 Speech 资源一致。');
+      new Setting(container).setName('音色').addDropdown(dropdown => dropdown.addOptions(VOICES).setValue(settings.voice).onChange(value => this.plugin.setVoice(value)));
+    } else {
+      const profile = settings.profiles[settings.engine as HttpEngine];
+      textField('完整接口地址', profile.endpoint, value => this.plugin.setProfileField('endpoint', value), '只接受 HTTPS。填写完整合成地址，不是平台主页或 Base URL。');
+      if (settings.engine === 'doubao') {
+        new Setting(container).setName('鉴权方式').addDropdown(dropdown => dropdown.addOption('api-key', '新版 API Key').addOption('app-token', '旧版 App ID + Access Token').setValue(profile.authMode).onChange(value => { this.plugin.setProfileField('authMode', value); this.render(); }));
+        textField('资源 ID', profile.resourceId, value => this.plugin.setProfileField('resourceId', value), '例如 seed-tts-2.0，必须匹配已开通的音色与模型版本。');
+        if (profile.authMode === 'app-token') textField('App ID', profile.appId, value => this.plugin.setProfileField('appId', value));
+        textField('模型 ID（可选）', profile.model, value => this.plugin.setProfileField('model', value), '多数豆包模型由资源 ID 选择，仅在接口要求 req_params.model 时填写。');
+      } else textField('TTS 模型 ID', profile.model, value => this.plugin.setProfileField('model', value));
+      textField('音色 ID', profile.voice, value => this.plugin.setVoice(value), settings.engine === 'siliconflow' ? '系统音色通常包含模型前缀，例如 FunAudioLLM/CosyVoice2-0.5B:alex。' : '填写平台已授权的音色或 speaker ID，不是 Edge 音色。');
+    }
+    new Setting(container).setName('本次会话凭据').addButton(button => button.setButtonText(settings.engine === 'edge' ? '授权在线朗读' : '输入凭据并授权').onClick(() => this.plugin.showCredentials()));
+    new Setting(container).setName('固定文本测试').addButton(button => button.setButtonText('试听当前配置').onClick(() => this.plugin.run(() => this.plugin.player.preview())));
+  }
+
+  onClose(): void { this.contentEl.empty(); this.closed(); }
 }
 
 class ListenerSettingTab extends PluginSettingTab {
@@ -327,12 +545,7 @@ class ListenerSettingTab extends PluginSettingTab {
   display(): void {
     this.containerEl.empty();
     const settings = this.plugin.settings;
-    new Setting(this.containerEl).setName('Azure 区域').setDesc('例如 eastasia、southeastasia、eastus。必须与 Speech 资源一致。').addText(text => text.setValue(settings.region).onChange(value => {
-      settings.region = value.trim(); this.plugin.settingsChanged(true);
-    }));
-    new Setting(this.containerEl).setName('中文音色').addDropdown(dropdown => dropdown.addOptions(VOICES).setValue(settings.voice).onChange(value => {
-      settings.voice = value; this.plugin.settingsChanged();
-    }));
+    new Setting(this.containerEl).setName('语音服务').setDesc(ENGINE_LABELS[settings.engine]).addButton(button => button.setButtonText('配置平台、模型与音色').onClick(() => this.plugin.showServices()));
     const listSetting = (name: string, field: 'folders' | 'excludes'): void => {
       new Setting(this.containerEl).setName(name).setDesc('仓库相对路径，每行一个目录。空白不代表整个仓库；填写 / 表示整个仓库。').addTextArea(text => text.setValue(settings[field].join('\n')).onChange(value => {
         settings[field] = value.split(/\r?\n/).map(path => path.trim()).filter(Boolean);
@@ -347,9 +560,9 @@ class ListenerSettingTab extends PluginSettingTab {
     new Setting(this.containerEl).setName('锁屏显示真实标题').addToggle(toggle => toggle.setValue(settings.revealTitle).onChange(value => {
       settings.revealTitle = value; void this.plugin.persist();
     }));
-    new Setting(this.containerEl).setName('本次会话授权').addButton(button => button.setButtonText('输入密钥并授权').onClick(() => this.plugin.showCredentials()));
+    new Setting(this.containerEl).setName('本次会话授权').addButton(button => button.setButtonText(settings.engine === 'edge' ? '授权在线朗读' : '输入凭据并授权').onClick(() => this.plugin.showCredentials()));
     new Setting(this.containerEl).setName('撤回授权').addButton(button => button.setButtonText('停止并清除凭据').onClick(() => {
-      this.plugin.sessionKey = ''; this.plugin.authorized = false; this.plugin.forget(); new Notice('本次会话授权已撤回。');
+      this.plugin.settingsChanged(true); new Notice('本次会话授权已撤回。');
     }));
     new Setting(this.containerEl).setName('播放历史').addButton(button => button.setButtonText('清除进度与音频').onClick(() => this.plugin.forget()));
   }

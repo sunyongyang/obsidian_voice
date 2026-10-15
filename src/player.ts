@@ -21,6 +21,8 @@ export interface AudioPort {
   currentTime: number;
   playbackRate: number;
   paused: boolean;
+  ended: boolean;
+  error: { code: number } | null;
   onended: ((event: Event) => unknown) | null;
   onerror: ((event: Event) => unknown) | null;
   onpause: ((event: Event) => unknown) | null;
@@ -29,6 +31,7 @@ export interface AudioPort {
   play(): Promise<void>;
   pause(): void;
   load(): void;
+  removeAttribute(name: string): void;
 }
 
 export interface PlayerDependencies {
@@ -56,14 +59,19 @@ export class NotePlayer {
   private wanted = false;
   private ready = false;
   private savedAt = 0;
+  private loading: Promise<void> | null = null;
   private prefetch: { index: number; promise: Promise<Blob | null> } | null = null;
 
   constructor(private readonly dependencies: PlayerDependencies) {
     const audio = dependencies.audio;
     audio.onended = () => { this.persist(); void this.advance(); };
-    audio.onerror = () => this.fail(new Error('音频无法解码或播放，请重试当前段。'));
+    audio.onerror = () => {
+      if (!this.ready || !this.url || !audio.error) return;
+      this.ready = false;
+      this.fail(new Error('音频无法解码或播放，请重试当前段。'));
+    };
     audio.onpause = () => {
-      if (this.status === 'playing') {
+      if (this.status === 'playing' && audio.paused && !audio.ended) {
         this.wanted = false;
         this.status = 'paused';
         this.persist();
@@ -71,17 +79,18 @@ export class NotePlayer {
       }
     };
     audio.onplaying = () => {
+      if (!this.ready || audio.paused) return;
       if (!this.wanted) { audio.pause(); return; }
       this.status = 'playing';
       this.emit();
     };
   }
 
-  async start(path: string, bookmark?: Bookmark): Promise<void> {
+  async start(path: string, bookmark?: Bookmark, autoplay = true): Promise<void> {
     this.stop();
     const generation = this.generation;
-    this.wanted = true;
-    this.status = 'preparing';
+    this.wanted = autoplay;
+    this.status = autoplay ? 'preparing' : 'paused';
     this.message = '';
     this.emit();
     try {
@@ -125,7 +134,7 @@ export class NotePlayer {
   pause(): void {
     this.wanted = false;
     this.dependencies.audio.pause();
-    if (this.snapshot) this.status = 'paused';
+    if (this.snapshot || this.status === 'preparing' || this.status === 'buffering') this.status = 'paused';
     this.persist();
     this.emit();
   }
@@ -137,9 +146,10 @@ export class NotePlayer {
     this.controller.abort();
     this.controller = new AbortController();
     this.dependencies.audio.pause();
-    this.dependencies.audio.src = '';
+    this.dependencies.audio.removeAttribute('src');
     this.dependencies.audio.load();
     this.ready = false;
+    this.loading = null;
     this.prefetch = null;
     if (this.url) this.dependencies.revokeUrl(this.url);
     this.url = '';
@@ -164,12 +174,13 @@ export class NotePlayer {
   async random(): Promise<void> {
     this.stop(true);
     const generation = this.generation;
+    this.wanted = true;
     this.status = 'preparing';
     this.emit();
     try {
       const path = await this.dependencies.next();
       if (generation !== this.generation) return;
-      if (path) await this.start(path);
+      if (path) await this.start(path, undefined, this.wanted);
       else { this.status = 'finished'; this.message = '本轮已听完，或所选范围没有可朗读笔记。'; this.emit(); }
     } catch (error) { if (generation === this.generation) this.fail(error); }
   }
@@ -190,7 +201,15 @@ export class NotePlayer {
     audio.onended = audio.onerror = audio.onpause = audio.onplaying = audio.onloadedmetadata = null;
   }
 
-  private async loadChunk(seconds = 0): Promise<void> {
+  private loadChunk(seconds = 0): Promise<void> {
+    if (this.loading) return this.loading;
+    const pending = this.prepareChunk(seconds);
+    this.loading = pending;
+    void pending.finally(() => { if (this.loading === pending) this.loading = null; });
+    return pending;
+  }
+
+  private async prepareChunk(seconds = 0): Promise<void> {
     const snapshot = this.snapshot;
     if (!snapshot) return;
     const generation = this.generation;

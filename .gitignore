@@ -1,5 +1,7 @@
 node_modules/
 main.js
+edge.cjs
+edge-worker.cjs
 dist/
 *.zip
 data.json
