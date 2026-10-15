@@ -1,7 +1,8 @@
-import { App, FileSystemAdapter, MarkdownView, Modal, Notice, Platform, Plugin, PluginSettingTab, requestUrl, Setting, setIcon, TFile } from 'obsidian';
+import { App, MarkdownView, Modal, Notice, Platform, Plugin, PluginSettingTab, requestUrl, Setting, setIcon, TFile } from 'obsidian';
+import { synthesizeEdge } from './edge';
 import { eligiblePath, inFolder, RandomRound, speechText } from './core';
 import { NotePlayer, snapshotHash, type Bookmark, type Snapshot } from './player';
-import { configScope, DEFAULT_ENGINE, ENGINE_LABELS, HTTP_PRESETS, serviceTarget, synthesize, usesMicrosoftVoices, validateConfig, VOICES, type EdgeSynthesizer, type HttpEngine, type HttpProfile, type SpeechConfig, type SpeechEngine } from './provider';
+import { configScope, DEFAULT_ENGINE, ENGINE_LABELS, HTTP_PRESETS, serviceTarget, synthesize, usesMicrosoftVoices, validateConfig, VOICES, type HttpEngine, type HttpProfile, type SpeechConfig, type SpeechEngine } from './provider';
 
 interface ListenerSettings {
   engine: SpeechEngine;
@@ -184,15 +185,8 @@ export default class ListenerPlugin extends Plugin {
   }
 
   private async edgeSpeech(text: string, voice: string, signal: AbortSignal): Promise<Blob> {
-    if (!Platform.isDesktopApp || !(this.app.vault.adapter instanceof FileSystemAdapter)) {
-      throw new Error('Edge TTS 直连目前仅支持桌面文件仓库。');
-    }
-    const directory = this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`;
-    const modulePath = `${this.app.vault.adapter.getBasePath()}/${directory}/edge.cjs`;
-    let adapter: { synthesizeEdge: EdgeSynthesizer };
-    try { adapter = require(modulePath) as { synthesizeEdge: EdgeSynthesizer }; }
-    catch { throw new Error('缺少或无法加载 Edge 桌面适配器，请重新复制全部四个安装文件。'); }
-    return adapter.synthesizeEdge(text, voice, signal);
+    if (!Platform.isDesktopApp) throw new Error('Edge TTS 直连目前仅支持桌面 Obsidian。');
+    return synthesizeEdge(text, voice, signal);
   }
 
   persist(): Promise<void> {

@@ -10,7 +10,7 @@ const config: SpeechConfig = { engine: 'azure', region: 'eastasia', voice: 'zh-C
 const audioResponse = () => ({ status: 200, contentType: 'audio/mpeg', data: new Uint8Array([1, 2, 3]).buffer });
 
 async function pluginWithoutHost(): Promise<ListenerPlugin> {
-  const result = await build({ entryPoints: ['src/main.ts'], bundle: true, write: false, platform: 'browser', format: 'cjs', external: ['obsidian'] });
+  const result = await build({ entryPoints: ['src/main.ts'], bundle: true, write: false, platform: 'browser', format: 'cjs', external: ['obsidian', '@andresaya/edge-tts'] });
   const module = { exports: {} as { default: new () => ListenerPlugin } };
   const host = { Plugin: class {}, Modal: class {}, PluginSettingTab: class {}, Platform: { isDesktopApp: true } };
   runInNewContext(result.outputFiles[0].text, { module, exports: module.exports, require: () => host, navigator: {}, URL });

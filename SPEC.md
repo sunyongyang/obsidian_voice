@@ -5,6 +5,8 @@
 项目代号：Obsidian Voice；展示名称待定  
 目标平台：Android 上的 Obsidian 优先
 
+发行范围更新（2026-10-15）：维护者已确认 1.0.1 采用 MIT 并仅支持桌面，最低 Obsidian 1.14.4，Edge 及项目/第三方许可已合并进 main.js。本文后续 Android 场景保留为未来产品目标，不是当前市场版本的支持承诺；目录提交与账号关联状态见 [MARKETPLACE.md](MARKETPLACE.md)。
+
 实现进展（2026-10-15）：用户已要求默认 Edge TTS，0.2.1 桌面技术预览通过 Node 适配器直连 Edge，默认无需 Azure 密钥。已在 Windows Obsidian 1.14.4 的真实插件实例中验证固定短句的在线合成、解码、开始和结束事件；没有取得长时间锁屏或 Android 真机证据。真实宿主不支持 Node Worker，0.2.1 已改用请求自身的取消信号，并修复浏览器媒体事件竞态。Android 不能加载桌面适配器，默认 Edge 会明确提示不支持；Azure 仍仅是用户主动配置和授权的备选，不静默回退。没有引入中转服务器、电脑替手机预生成或本地模型；本文 Android P0 仍未全量交付。实际功能、分发限制及安装步骤见 [README.md](README.md)。
 
 ## 1. 产品定位

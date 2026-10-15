@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
+import { build } from 'esbuild';
 import { readFileSync } from 'node:fs';
+import { builtinModules } from 'node:module';
 import test from 'node:test';
 
 test('release package, manifest and compatibility map have consistent versions', () => {
@@ -10,4 +12,21 @@ test('release package, manifest and compatibility map have consistent versions',
   assert.equal(packageInfo.version, manifest.version);
   assert.equal(versions[manifest.version], manifest.minAppVersion);
   assert.equal(manifest.id, 'note-listener');
+  assert.equal(manifest.isDesktopOnly, true);
+  assert.equal(packageInfo.license, 'MIT');
+  const license = readFileSync('LICENSE', 'utf8');
+  assert.match(license, /^MIT License/);
+  assert.match(license, /Permission is hereby granted/);
+  assert.ok(manifest.description.length <= 250 && manifest.description.endsWith('.'));
+});
+
+test('community installer main.js includes Edge without any extra plugin code file', async () => {
+  const result = await build({ entryPoints: ['src/main.ts'], bundle: true, write: false, platform: 'node', format: 'cjs',
+    target: 'node18', external: ['obsidian', 'bufferutil', 'utf-8-validate'], outfile: 'main.js', metafile: true });
+  const allowed = new Set([...builtinModules, ...builtinModules.map(name => `node:${name}`), 'obsidian', 'bufferutil', 'utf-8-validate']);
+  const imports = Object.values(result.metafile!.outputs).flatMap(output => output.imports);
+  assert.ok(imports.every(item => allowed.has(item.path)), JSON.stringify(imports));
+  assert.ok(Object.keys(result.metafile!.inputs).some(path => path.includes('@andresaya/edge-tts')));
+  assert.equal(result.outputFiles.length, 1);
+  assert.ok(!result.outputFiles[0].text.includes('/edge.cjs'));
 });
